@@ -3,7 +3,10 @@ import streamlit as st
 from langchain_openai import ChatOpenAI
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langgraph.prebuilt import create_react_agent
-from langgraph.prebuilt import create_react_agent
+from langchain_core.messages import BaseMessage, HumanMessage
+from langgraph.types import Command
+from typing import Literal
+from langgraph.graph import MessagesState, StateGraph, START, END
 
 
 # create title and description
@@ -63,3 +66,40 @@ advisor_agent = create_react_agent(
         "Make a decision based on the research: pursue or not pursue. Be objective and logical."
     ),
 )
+
+def get_next_node(last_message: BaseMessage, goto: str):
+    if "FINAL ANSWER" in last_message.content:
+        return "END"
+    return goto
+
+# Define functionresearch_node that takes in the current state (a dictionary with message history)
+# Returns Command that either sends us to the "startup_advisor" node or the END node
+def research_node(state: MessagesState) -> Command[Literal["startup_advisor", "END"]]:
+    
+    # Call research agent with current state and store result. The result will contain updated messages
+    result = research_agent.invoke(state)
+    
+    # Determine which node to go to next based on the content of the last message in the result
+    goto = get_next_node(result["messages"][-1], "startup_advisor")
+    
+    # Rename the author of the last message to "researcher" by wrapping it in a new HumanMessage
+    result["messages"][-1] = HumanMessage(
+        content=result["messages"][-1].content,  # Keep the message content the same
+        name="researcher"  # Set the name to "researcher" for traceability in the conversation
+    )
+    
+    # Return a Command object which updates the messages in state and tells the graph which node to go to
+    return Command(
+        update={"messages": result["messages"]},  # Update the state with the modified message list
+        goto=goto,  # Set the next node to transition to
+    )
+
+# same as research_node but for the advisor agent
+def advisor_node(state: MessagesState) -> Command[Literal["researcher", "END"]]:
+    result = advisor_agent.invoke(state)
+    goto = get_next_node(result["messages"][-1], "researcher")
+    result["messages"][-1] = HumanMessage(content=result["messages"][-1].content, name="startup_advisor")
+    return Command(
+        update ={ "messages": result["messages"]},
+        goto = goto,
+    )
