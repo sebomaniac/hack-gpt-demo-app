@@ -69,12 +69,12 @@ advisor_agent = create_react_agent(
 
 def get_next_node(last_message: BaseMessage, goto: str):
     if "FINAL ANSWER" in last_message.content:
-        return "END"
+        return END
     return goto
 
 # Define functionresearch_node that takes in the current state (a dictionary with message history)
 # Returns Command that either sends us to the "startup_advisor" node or the END node
-def research_node(state: MessagesState) -> Command[Literal["startup_advisor", "END"]]:
+def research_node(state: MessagesState) -> Command[Literal["startup_advisor", END]]:    # type: ignore
     
     # Call research agent with current state and store result. The result will contain updated messages
     result = research_agent.invoke(state)
@@ -95,7 +95,7 @@ def research_node(state: MessagesState) -> Command[Literal["startup_advisor", "E
     )
 
 # same as research_node but for the advisor agent
-def advisor_node(state: MessagesState) -> Command[Literal["researcher", "END"]]:
+def advisor_node(state: MessagesState) -> Command[Literal["researcher", END]]:  # type: ignore
     result = advisor_agent.invoke(state)
     goto = get_next_node(result["messages"][-1], "researcher")
     result["messages"][-1] = HumanMessage(content=result["messages"][-1].content, name="startup_advisor")
@@ -103,3 +103,61 @@ def advisor_node(state: MessagesState) -> Command[Literal["researcher", "END"]]:
         update ={ "messages": result["messages"]},
         goto = goto,
     )
+
+# initialize a LangGraph StateGraph with MessagesState as the shared state for all nodes
+workflow = StateGraph(MessagesState)
+# add "researcher" node to the graph, which executes the research_node function
+workflow.add_node("researcher", research_node)
+# add "startup_advisor" node to the graph, which executes the advisor_node function
+workflow.add_node("startup_advisor", advisor_node)
+# define the starting point of the graph to be the "researcher" node
+workflow.add_edge(START, "researcher")
+
+# compile the graph into an executable version that can be invoked
+graph = workflow.compile()
+
+
+# initialize data variable to store the final answer
+data = None
+flow = []
+
+# run the graph if user submits
+if submit:
+    # create a temporary UI placeholder to show status while processing
+    status_placeholder = st.empty()
+    status_placeholder.info("Processing your request...")
+
+    events = graph.stream(
+        {"messages": [("user", user_prompt)]},
+        {"recursion_limit": 150},
+    )
+    # iterate through the events produced by the graph
+    for event in events:
+        if event.get("startup_advisor", {}) or event.get("researcher", {}):
+            if event.get("startup_advisor", {}):
+                data = event["startup_advisor"]
+                flow.append("Advisor")
+            elif event.get("researcher", {}):
+                data = event["researcher"]
+                flow.append("Researcher")
+
+    # clear the status placeholder
+    status_placeholder.empty()
+
+    # if we have a final answer, extract it from the last message and display it
+    if data:
+        final_answer = data["messages"][-1].content.strip()
+        st.subheader("Final Answer")
+        st.markdown(final_answer)
+    else:
+        st.write("No final answer was produced.")
+
+# display the flow of the conversation
+with st.expander("Response Flow", expanded=True):
+    depiction = ""
+    for i, step in enumerate(flow):
+        if i < len(flow)-1:
+            depiction += step + " -> "
+        else:
+            depiction += step
+            st.write(depiction)
